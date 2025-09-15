@@ -2,14 +2,14 @@ menu "BNO055 IMU Configuration"
 
     config BNO055_I2C_SCL_IO
         int "I2C SCL GPIO Pin"
-        default 23
+        default 22
         range 0 39
         help
             GPIO pin number for I2C SCL (clock) line.
 
     config BNO055_I2C_SDA_IO
         int "I2C SDA GPIO Pin"
-        default 18
+        default 21
         range 0 39
         help
             GPIO pin number for I2C SDA (data) line.
@@ -28,5 +28,26 @@ menu "BNO055 IMU Configuration"
         range 0 1
         help
             I2C port number (0 or 1).
+
+    config BNO055_ENABLE_IRQ
+        bool "Enable BNO055 Interrupt Support"
+        default y
+        help
+            Enable BNO055 interrupt functionality for motion detection.
+
+    config BNO055_IRQ_GPIO
+        int "BNO055 Interrupt GPIO Pin"
+        depends on BNO055_ENABLE_IRQ
+        default 25
+        range 0 39
+        help
+            GPIO pin number for BNO055 interrupt line (INT pin).
+
+    config BNO055_IRQ_ACTIVE_LOW
+        bool "Interrupt Active Low"
+        depends on BNO055_ENABLE_IRQ
+        default y
+        help
+            Set interrupt polarity. Default is active low.
 
 endmenu

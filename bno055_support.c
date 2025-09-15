@@ -46,11 +46,32 @@
 #include "freertos/task.h"
 #include "driver/i2c.h"
 #include "esp_rom_sys.h"
+#include "driver/gpio.h"
+#include "esp_intr_alloc.h"
+#include "esp_timer.h"
+#include "esp_check.h"
 
 // I2C timeout constant
 #define I2C_MASTER_TIMEOUT_MS       1000
 
 static const char* TAG = "BNO055";
+
+#ifdef CONFIG_BNO055_ENABLE_IRQ
+// IRQ related variables
+static TaskHandle_t bno055_irq_task_handle = NULL;
+static volatile bool bno055_irq_triggered = false;
+
+// Global sensor data - no locks, single writer, single reader
+volatile struct {
+    float accel_x, accel_y, accel_z;    // m/s²
+    float gyro_x, gyro_y, gyro_z;       // deg/s
+    float mag_x, mag_y, mag_z;          // µT
+    float euler_h, euler_r, euler_p;    // degrees
+    float quat_w, quat_x, quat_y, quat_z; // quaternion
+    uint32_t timestamp_us;
+    bool data_valid;
+} bno055_latest_data = {0};
+#endif
 
 /*----------------------------------------------------------------------------*
 *  The following APIs are used for reading and writing of
@@ -90,6 +111,25 @@ s8 I2C_routine(void);
  *  \param : delay in ms
  */
 void BNO055_delay_msek(u32 msek);
+
+#ifdef CONFIG_BNO055_ENABLE_IRQ
+/*  Brief : Initialize BNO055 interrupt-driven data acquisition
+ *  \return : ESP_OK or error code
+ */
+esp_err_t bno055_irq_init(void);
+
+/*  Brief : Get latest sensor data (fast, no I2C)
+ *  \param : pointers to data arrays (can be NULL to skip)
+ *  \return : ESP_OK if data valid, ESP_ERR_INVALID_STATE if no data
+ */
+esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler_hpr,
+                                 float *quat_wxyz, uint32_t *timestamp_us);
+
+/*  Brief : Cleanup BNO055 interrupt support
+ *  \return : ESP_OK
+ */
+esp_err_t bno055_irq_deinit(void);
+#endif
 
 #endif
 
@@ -680,5 +720,167 @@ void BNO055_delay_msek(u32 msek)
 {
     esp_rom_delay_us(msek * 1000);  // 阻塞延迟，不让出CPU
 }
+
+#ifdef CONFIG_BNO055_ENABLE_IRQ
+// ISR handler
+static void IRAM_ATTR bno055_irq_handler(void* arg)
+{
+    bno055_irq_triggered = true;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    if (bno055_irq_task_handle) {
+        vTaskNotifyGiveFromISR(bno055_irq_task_handle, &xHigherPriorityTaskWoken);
+    }
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+// High-speed IRQ task for sensor data acquisition
+static void bno055_irq_task(void* pvParameters)
+{
+    struct bno055_accel_double_t accel_data;
+    struct bno055_gyro_double_t gyro_data;
+    struct bno055_mag_double_t mag_data;
+    struct bno055_euler_double_t euler_data;
+    struct bno055_quaternion_t quat_data;
+
+    while (1) {
+        // Wait for interrupt notification
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        if (bno055_irq_triggered) {
+            bno055_irq_triggered = false;
+
+            // Fast sequential read - no error checking for speed
+            bno055_latest_data.timestamp_us = esp_timer_get_time();
+
+            // Read all sensor data as fast as possible
+            if (bno055_convert_double_accel_xyz_msq(&accel_data) == BNO055_SUCCESS) {
+                bno055_latest_data.accel_x = (float)accel_data.x;
+                bno055_latest_data.accel_y = (float)accel_data.y;
+                bno055_latest_data.accel_z = (float)accel_data.z;
+            }
+
+            if (bno055_convert_double_gyro_xyz_dps(&gyro_data) == BNO055_SUCCESS) {
+                bno055_latest_data.gyro_x = (float)gyro_data.x;
+                bno055_latest_data.gyro_y = (float)gyro_data.y;
+                bno055_latest_data.gyro_z = (float)gyro_data.z;
+            }
+
+            if (bno055_convert_double_mag_xyz_uT(&mag_data) == BNO055_SUCCESS) {
+                bno055_latest_data.mag_x = (float)mag_data.x;
+                bno055_latest_data.mag_y = (float)mag_data.y;
+                bno055_latest_data.mag_z = (float)mag_data.z;
+            }
+
+            if (bno055_convert_double_euler_hpr_deg(&euler_data) == BNO055_SUCCESS) {
+                bno055_latest_data.euler_h = (float)euler_data.h;
+                bno055_latest_data.euler_r = (float)euler_data.r;
+                bno055_latest_data.euler_p = (float)euler_data.p;
+            }
+
+            if (bno055_read_quaternion_wxyz(&quat_data) == BNO055_SUCCESS) {
+                bno055_latest_data.quat_w = (float)quat_data.w / 16384.0f;
+                bno055_latest_data.quat_x = (float)quat_data.x / 16384.0f;
+                bno055_latest_data.quat_y = (float)quat_data.y / 16384.0f;
+                bno055_latest_data.quat_z = (float)quat_data.z / 16384.0f;
+            }
+
+            bno055_latest_data.data_valid = true;
+        }
+    }
+}
+
+// Initialize BNO055 interrupt-driven data acquisition
+esp_err_t bno055_irq_init(void)
+{
+    // Configure GPIO
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << CONFIG_BNO055_IRQ_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = CONFIG_BNO055_IRQ_ACTIVE_LOW ? GPIO_INTR_NEGEDGE : GPIO_INTR_POSEDGE
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&io_conf), TAG, "GPIO config failed");
+
+    // Install GPIO ISR
+    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "GPIO ISR install failed");
+        return err;
+    }
+
+    ESP_RETURN_ON_ERROR(gpio_isr_handler_add(CONFIG_BNO055_IRQ_GPIO, bno055_irq_handler, NULL),
+                        TAG, "GPIO ISR handler add failed");
+
+    // Create high-priority IRQ task
+    BaseType_t ret = xTaskCreate(bno055_irq_task, "bno055_irq", 2048, NULL,
+                                configMAX_PRIORITIES - 1, &bno055_irq_task_handle);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create BNO055 IRQ task");
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Enable BNO055 any motion interrupt
+    if (bno055_set_intr_mask_accel_any_motion(BNO055_BIT_ENABLE) != BNO055_SUCCESS ||
+        bno055_set_intr_accel_any_motion(BNO055_BIT_ENABLE) != BNO055_SUCCESS) {
+        ESP_LOGE(TAG, "Failed to configure BNO055 interrupts");
+        return ESP_FAIL;
+    }
+
+    bno055_latest_data.data_valid = false;
+    ESP_LOGI(TAG, "BNO055 IRQ initialized on GPIO%d", CONFIG_BNO055_IRQ_GPIO);
+    return ESP_OK;
+}
+
+// Get latest sensor data (fast, no I2C access)
+esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler_hpr,
+                                 float *quat_wxyz, uint32_t *timestamp_us)
+{
+    if (!bno055_latest_data.data_valid) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (accel_xyz) {
+        accel_xyz[0] = bno055_latest_data.accel_x;
+        accel_xyz[1] = bno055_latest_data.accel_y;
+        accel_xyz[2] = bno055_latest_data.accel_z;
+    }
+    if (gyro_xyz) {
+        gyro_xyz[0] = bno055_latest_data.gyro_x;
+        gyro_xyz[1] = bno055_latest_data.gyro_y;
+        gyro_xyz[2] = bno055_latest_data.gyro_z;
+    }
+    if (euler_hpr) {
+        euler_hpr[0] = bno055_latest_data.euler_h;
+        euler_hpr[1] = bno055_latest_data.euler_p;
+        euler_hpr[2] = bno055_latest_data.euler_r;
+    }
+    if (quat_wxyz) {
+        quat_wxyz[0] = bno055_latest_data.quat_w;
+        quat_wxyz[1] = bno055_latest_data.quat_x;
+        quat_wxyz[2] = bno055_latest_data.quat_y;
+        quat_wxyz[3] = bno055_latest_data.quat_z;
+    }
+    if (timestamp_us) {
+        *timestamp_us = bno055_latest_data.timestamp_us;
+    }
+    return ESP_OK;
+}
+
+// Cleanup interrupt system
+esp_err_t bno055_irq_deinit(void)
+{
+    if (bno055_irq_task_handle) {
+        vTaskDelete(bno055_irq_task_handle);
+        bno055_irq_task_handle = NULL;
+    }
+
+    gpio_isr_handler_remove(CONFIG_BNO055_IRQ_GPIO);
+    bno055_latest_data.data_valid = false;
+
+    ESP_LOGI(TAG, "BNO055 IRQ deinitialized");
+    return ESP_OK;
+}
+#endif
 
 #endif
