@@ -811,6 +811,8 @@ static inline void bno055_sample_once(void)
 // Unified acquisition task (polling only)
 static void bno055_acq_task(void* pvParameters)
 {
+    ESP_LOGI(TAG, "BNO055 acquisition task started with %d ticks interval",
+             pdMS_TO_TICKS(CONFIG_BNO055_POLL_INTERVAL_MS));
     vTaskDelay(pdMS_TO_TICKS(700));
     while (1) {
         bno055_sample_once();
