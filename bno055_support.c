@@ -936,7 +936,6 @@ esp_err_t bno055_data_acq_start(void)
         // Not fatal for start
     }
 
-    bno055_latest_data.data_valid = false;
     ESP_LOGI(TAG, "BNO055 IRQ mode started on GPIO%d", CONFIG_BNO055_IRQ_GPIO);
     return ESP_OK;
 #else
