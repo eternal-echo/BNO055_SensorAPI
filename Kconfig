@@ -31,7 +31,7 @@ menu "BNO055 IMU Configuration"
 
     config BNO055_ENABLE_IRQ
         bool "Enable BNO055 Interrupt Support"
-        default y
+        default n
         help
             Enable BNO055 interrupt functionality for motion detection.
 
@@ -49,5 +49,13 @@ menu "BNO055 IMU Configuration"
         default y
         help
             Set interrupt polarity. Default is active low.
+
+    config BNO055_POLL_INTERVAL_MS
+        int "Polling interval when IRQ disabled (ms)"
+        depends on !BNO055_ENABLE_IRQ
+        default 50
+        range 10 1000
+        help
+            When interrupts are disabled, read one frame periodically with this interval.
 
 endmenu

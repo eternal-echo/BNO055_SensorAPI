@@ -54,6 +54,8 @@
 
 // I2C timeout constant
 #define I2C_MASTER_TIMEOUT_MS       1000
+// BNO055 quaternion LSB scale (per datasheet: 1 LSB = 1/16384)
+#define BNO055_QUATERNION_SCALE_FACTOR 16384.0f
 
 static const char* TAG = "BNO055";
 
@@ -63,8 +65,10 @@ static i2c_master_dev_handle_t s_bno_dev = NULL;
 
 #ifdef CONFIG_BNO055_ENABLE_IRQ
 // IRQ related variables
-static TaskHandle_t bno055_irq_task_handle = NULL;
 static volatile bool bno055_irq_triggered = false;
+#endif
+// Unified acquisition task handle
+static TaskHandle_t s_bno_acq_task_handle = NULL;
 
 // Global sensor data - no locks, single writer, single reader
 volatile struct {
@@ -73,10 +77,11 @@ volatile struct {
     float mag_x, mag_y, mag_z;          // µT
     float euler_h, euler_r, euler_p;    // degrees
     float quat_w, quat_x, quat_y, quat_z; // quaternion
+    float gravity_x, gravity_y, gravity_z; // m/s²
+    uint8_t calib_sys, calib_gyro, calib_accel, calib_mag; // calib status
     uint32_t timestamp_us;
     bool data_valid;
 } bno055_latest_data = {0};
-#endif
 
 /*----------------------------------------------------------------------------*
 *  The following APIs are used for reading and writing of
@@ -117,24 +122,27 @@ s8 I2C_routine(void);
  */
 void BNO055_delay_msek(u32 msek);
 
-#ifdef CONFIG_BNO055_ENABLE_IRQ
-/*  Brief : Initialize BNO055 interrupt-driven data acquisition
- *  \return : ESP_OK or error code
- */
-esp_err_t bno055_irq_init(void);
+/*  Note: IRQ init/deinit logic is embedded inside bno055_data_acq_start/stop */
 
 /*  Brief : Get latest sensor data (fast, no I2C)
  *  \param : pointers to data arrays (can be NULL to skip)
  *  \return : ESP_OK if data valid, ESP_ERR_INVALID_STATE if no data
  */
 esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler_hpr,
-                                 float *quat_wxyz, uint32_t *timestamp_us);
+                                 float *quat_wxyz, float *mag_xyz, float *grav_xyz,
+                                 uint8_t *calib_sys, uint8_t *calib_gyro, uint8_t *calib_accel, uint8_t *calib_mag,
+                                 uint32_t *timestamp_us);
 
-/*  Brief : Cleanup BNO055 interrupt support
- *  \return : ESP_OK
+/*  Brief : Cleanup BNO055 interrupt support (now merged into bno055_data_acq_stop) */
+
+/*  Brief : Start background data acquisition
+ *  If IRQ enabled, use IRQ task; otherwise, use periodic polling.
  */
-esp_err_t bno055_irq_deinit(void);
-#endif
+esp_err_t bno055_data_acq_start(void);
+
+/*  Brief : Stop background data acquisition (IRQ or polling)
+ */
+esp_err_t bno055_data_acq_stop(void);
 
 #endif
 
@@ -688,10 +696,6 @@ s8 BNO055_I2C_bus_write(u8 dev_addr, u8 reg_addr, u8 *reg_data, u8 cnt)
         return BNO055_ERROR;
     }
 
-    if (cnt > 255) {
-        return BNO055_ERROR;
-    }
-
     uint8_t tmp_buf[1 + 255];
     tmp_buf[0] = reg_addr;
     if (cnt > 0 && reg_data != NULL) {
@@ -750,114 +754,101 @@ static void IRAM_ATTR bno055_irq_handler(void* arg)
 {
     bno055_irq_triggered = true;
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    if (bno055_irq_task_handle) {
-        vTaskNotifyGiveFromISR(bno055_irq_task_handle, &xHigherPriorityTaskWoken);
+    if (s_bno_acq_task_handle) {
+        vTaskNotifyGiveFromISR(s_bno_acq_task_handle, &xHigherPriorityTaskWoken);
     }
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
+#endif
 
-// High-speed IRQ task for sensor data acquisition
-static void bno055_irq_task(void* pvParameters)
+// Common one-shot sampler
+static inline void bno055_sample_once(void)
 {
     struct bno055_accel_double_t accel_data;
     struct bno055_gyro_double_t gyro_data;
     struct bno055_mag_double_t mag_data;
     struct bno055_euler_double_t euler_data;
     struct bno055_quaternion_t quat_data;
+    struct bno055_gravity_double_t grav_data;
 
-    while (1) {
-        // Wait for interrupt notification
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    bno055_latest_data.timestamp_us = esp_timer_get_time();
 
-        if (bno055_irq_triggered) {
-            bno055_irq_triggered = false;
+    if (bno055_convert_double_accel_xyz_msq(&accel_data) == BNO055_SUCCESS) {
+        bno055_latest_data.accel_x = (float)accel_data.x;
+        bno055_latest_data.accel_y = (float)accel_data.y;
+        bno055_latest_data.accel_z = (float)accel_data.z;
+    }
+    if (bno055_convert_double_gyro_xyz_dps(&gyro_data) == BNO055_SUCCESS) {
+        bno055_latest_data.gyro_x = (float)gyro_data.x;
+        bno055_latest_data.gyro_y = (float)gyro_data.y;
+        bno055_latest_data.gyro_z = (float)gyro_data.z;
+    }
+    if (bno055_convert_double_mag_xyz_uT(&mag_data) == BNO055_SUCCESS) {
+        bno055_latest_data.mag_x = (float)mag_data.x;
+        bno055_latest_data.mag_y = (float)mag_data.y;
+        bno055_latest_data.mag_z = (float)mag_data.z;
+    }
+    if (bno055_convert_double_euler_hpr_deg(&euler_data) == BNO055_SUCCESS) {
+        bno055_latest_data.euler_h = (float)euler_data.h;
+        bno055_latest_data.euler_r = (float)euler_data.r;
+        bno055_latest_data.euler_p = (float)euler_data.p;
+    }
+    if (bno055_read_quaternion_wxyz(&quat_data) == BNO055_SUCCESS) {
+        bno055_latest_data.quat_w = (float)quat_data.w / BNO055_QUATERNION_SCALE_FACTOR;
+        bno055_latest_data.quat_x = (float)quat_data.x / BNO055_QUATERNION_SCALE_FACTOR;
+        bno055_latest_data.quat_y = (float)quat_data.y / BNO055_QUATERNION_SCALE_FACTOR;
+        bno055_latest_data.quat_z = (float)quat_data.z / BNO055_QUATERNION_SCALE_FACTOR;
+    }
+    if (bno055_convert_double_gravity_xyz_msq(&grav_data) == BNO055_SUCCESS) {
+        bno055_latest_data.gravity_x = (float)grav_data.x;
+        bno055_latest_data.gravity_y = (float)grav_data.y;
+        bno055_latest_data.gravity_z = (float)grav_data.z;
+    }
 
-            // Fast sequential read - no error checking for speed
-            bno055_latest_data.timestamp_us = esp_timer_get_time();
-
-            // Read all sensor data as fast as possible
-            if (bno055_convert_double_accel_xyz_msq(&accel_data) == BNO055_SUCCESS) {
-                bno055_latest_data.accel_x = (float)accel_data.x;
-                bno055_latest_data.accel_y = (float)accel_data.y;
-                bno055_latest_data.accel_z = (float)accel_data.z;
-            }
-
-            if (bno055_convert_double_gyro_xyz_dps(&gyro_data) == BNO055_SUCCESS) {
-                bno055_latest_data.gyro_x = (float)gyro_data.x;
-                bno055_latest_data.gyro_y = (float)gyro_data.y;
-                bno055_latest_data.gyro_z = (float)gyro_data.z;
-            }
-
-            if (bno055_convert_double_mag_xyz_uT(&mag_data) == BNO055_SUCCESS) {
-                bno055_latest_data.mag_x = (float)mag_data.x;
-                bno055_latest_data.mag_y = (float)mag_data.y;
-                bno055_latest_data.mag_z = (float)mag_data.z;
-            }
-
-            if (bno055_convert_double_euler_hpr_deg(&euler_data) == BNO055_SUCCESS) {
-                bno055_latest_data.euler_h = (float)euler_data.h;
-                bno055_latest_data.euler_r = (float)euler_data.r;
-                bno055_latest_data.euler_p = (float)euler_data.p;
-            }
-
-            if (bno055_read_quaternion_wxyz(&quat_data) == BNO055_SUCCESS) {
-                bno055_latest_data.quat_w = (float)quat_data.w / 16384.0f;
-                bno055_latest_data.quat_x = (float)quat_data.x / 16384.0f;
-                bno055_latest_data.quat_y = (float)quat_data.y / 16384.0f;
-                bno055_latest_data.quat_z = (float)quat_data.z / 16384.0f;
-            }
-
-            bno055_latest_data.data_valid = true;
+    {
+        u8 t;
+        if (bno055_get_sys_calib_stat(&t) == BNO055_SUCCESS) {
+            bno055_latest_data.calib_sys = t;
+        }
+        if (bno055_get_gyro_calib_stat(&t) == BNO055_SUCCESS) {
+            bno055_latest_data.calib_gyro = t;
+        }
+        if (bno055_get_accel_calib_stat(&t) == BNO055_SUCCESS) {
+            bno055_latest_data.calib_accel = t;
+        }
+        if (bno055_get_mag_calib_stat(&t) == BNO055_SUCCESS) {
+            bno055_latest_data.calib_mag = t;
         }
     }
+
+    bno055_latest_data.data_valid = true;
 }
 
-// Initialize BNO055 interrupt-driven data acquisition
-esp_err_t bno055_irq_init(void)
+// Unified acquisition task (IRQ or polling)
+static void bno055_acq_task(void* pvParameters)
 {
-    // Configure GPIO
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << CONFIG_BNO055_IRQ_GPIO),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = CONFIG_BNO055_IRQ_ACTIVE_LOW ? GPIO_INTR_NEGEDGE : GPIO_INTR_POSEDGE
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&io_conf), TAG, "GPIO config failed");
-
-    // Install GPIO ISR
-    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "GPIO ISR install failed");
-        return err;
+    vTaskDelay(pdMS_TO_TICKS(700));
+    while (1) {
+#ifdef CONFIG_BNO055_ENABLE_IRQ
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (bno055_irq_triggered) {
+            bno055_irq_triggered = false;
+            bno055_sample_once();
+        }
+#else
+        bno055_sample_once();
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_BNO055_POLL_INTERVAL_MS));
+#endif
     }
-
-    ESP_RETURN_ON_ERROR(gpio_isr_handler_add(CONFIG_BNO055_IRQ_GPIO, bno055_irq_handler, NULL),
-                        TAG, "GPIO ISR handler add failed");
-
-    // Create high-priority IRQ task
-    BaseType_t ret = xTaskCreate(bno055_irq_task, "bno055_irq", 2048, NULL,
-                                configMAX_PRIORITIES - 1, &bno055_irq_task_handle);
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create BNO055 IRQ task");
-        return ESP_ERR_NO_MEM;
-    }
-
-    // Enable BNO055 any motion interrupt
-    if (bno055_set_intr_mask_accel_any_motion(BNO055_BIT_ENABLE) != BNO055_SUCCESS ||
-        bno055_set_intr_accel_any_motion(BNO055_BIT_ENABLE) != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to configure BNO055 interrupts");
-        return ESP_FAIL;
-    }
-
-    bno055_latest_data.data_valid = false;
-    ESP_LOGI(TAG, "BNO055 IRQ initialized on GPIO%d", CONFIG_BNO055_IRQ_GPIO);
-    return ESP_OK;
 }
+
+/* IRQ init/deinit removed: merged into bno055_data_acq_start/stop */
 
 // Get latest sensor data (fast, no I2C access)
 esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler_hpr,
-                                 float *quat_wxyz, uint32_t *timestamp_us)
+                                 float *quat_wxyz, float *mag_xyz, float *grav_xyz,
+                                 uint8_t *calib_sys, uint8_t *calib_gyro, uint8_t *calib_accel, uint8_t *calib_mag,
+                                 uint32_t *timestamp_us)
 {
     if (!bno055_latest_data.data_valid) {
         return ESP_ERR_INVALID_STATE;
@@ -884,26 +875,103 @@ esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler
         quat_wxyz[2] = bno055_latest_data.quat_y;
         quat_wxyz[3] = bno055_latest_data.quat_z;
     }
+    if (mag_xyz) {
+        mag_xyz[0] = bno055_latest_data.mag_x;
+        mag_xyz[1] = bno055_latest_data.mag_y;
+        mag_xyz[2] = bno055_latest_data.mag_z;
+    }
+    if (grav_xyz) {
+        grav_xyz[0] = bno055_latest_data.gravity_x;
+        grav_xyz[1] = bno055_latest_data.gravity_y;
+        grav_xyz[2] = bno055_latest_data.gravity_z;
+    }
+    if (calib_sys) *calib_sys = bno055_latest_data.calib_sys;
+    if (calib_gyro) *calib_gyro = bno055_latest_data.calib_gyro;
+    if (calib_accel) *calib_accel = bno055_latest_data.calib_accel;
+    if (calib_mag) *calib_mag = bno055_latest_data.calib_mag;
     if (timestamp_us) {
         *timestamp_us = bno055_latest_data.timestamp_us;
     }
     return ESP_OK;
 }
 
-// Cleanup interrupt system
-esp_err_t bno055_irq_deinit(void)
+/* IRQ deinit removed: merged into bno055_data_acq_stop */
+
+// Start background acquisition depending on config
+esp_err_t bno055_data_acq_start(void)
 {
-    if (bno055_irq_task_handle) {
-        vTaskDelete(bno055_irq_task_handle);
-        bno055_irq_task_handle = NULL;
+#ifdef CONFIG_BNO055_ENABLE_IRQ
+    // Configure GPIO for IRQ
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << CONFIG_BNO055_IRQ_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = CONFIG_BNO055_IRQ_ACTIVE_LOW ? GPIO_INTR_NEGEDGE : GPIO_INTR_POSEDGE
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&io_conf), TAG, "GPIO config failed");
+
+    // Install GPIO ISR
+    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "GPIO ISR install failed");
+        return err;
+    }
+    ESP_RETURN_ON_ERROR(gpio_isr_handler_add(CONFIG_BNO055_IRQ_GPIO, bno055_irq_handler, NULL),
+                        TAG, "GPIO ISR handler add failed");
+
+    // Create acquisition task
+    if (s_bno_acq_task_handle == NULL) {
+        BaseType_t ret = xTaskCreate(bno055_acq_task, "bno055_acq", 3072, NULL,
+                                     configMAX_PRIORITIES - 1, &s_bno_acq_task_handle);
+        if (ret != pdPASS) {
+            return ESP_ERR_NO_MEM;
+        }
     }
 
+    // Enable BNO055 any motion interrupt (example; can be adjusted)
+    if (bno055_set_intr_mask_accel_any_motion(BNO055_BIT_ENABLE) != BNO055_SUCCESS ||
+        bno055_set_intr_accel_any_motion(BNO055_BIT_ENABLE) != BNO055_SUCCESS) {
+        ESP_LOGW(TAG, "BNO055 motion interrupt config failed");
+        // Not fatal for start
+    }
+
+    bno055_latest_data.data_valid = false;
+    ESP_LOGI(TAG, "BNO055 IRQ mode started on GPIO%d", CONFIG_BNO055_IRQ_GPIO);
+    return ESP_OK;
+#else
+    if (s_bno_acq_task_handle == NULL) {
+        BaseType_t ret = xTaskCreate(bno055_acq_task, "bno055_acq", 3072, NULL,
+                                     configMAX_PRIORITIES - 3, &s_bno_acq_task_handle);
+        if (ret != pdPASS) {
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGI(TAG, "BNO055 polling started @ %d ms", CONFIG_BNO055_POLL_INTERVAL_MS);
+    }
+    return ESP_OK;
+#endif
+}
+
+esp_err_t bno055_data_acq_stop(void)
+{
+#ifdef CONFIG_BNO055_ENABLE_IRQ
+    if (s_bno_acq_task_handle) {
+        vTaskDelete(s_bno_acq_task_handle);
+        s_bno_acq_task_handle = NULL;
+    }
     gpio_isr_handler_remove(CONFIG_BNO055_IRQ_GPIO);
     bno055_latest_data.data_valid = false;
-
-    ESP_LOGI(TAG, "BNO055 IRQ deinitialized");
+    ESP_LOGI(TAG, "BNO055 IRQ mode stopped");
     return ESP_OK;
-}
+#else
+    if (s_bno_acq_task_handle) {
+        vTaskDelete(s_bno_acq_task_handle);
+        s_bno_acq_task_handle = NULL;
+    }
+    bno055_latest_data.data_valid = false;
+    ESP_LOGI(TAG, "BNO055 polling stopped");
+    return ESP_OK;
 #endif
+}
 
 #endif
