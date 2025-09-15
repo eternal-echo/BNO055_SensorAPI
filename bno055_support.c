@@ -40,6 +40,17 @@
 *  Includes
 *---------------------------------------------------------------------------*/
 #include "bno055.h"
+#include "esp_log.h"
+#include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/i2c.h"
+#include "esp_rom_sys.h"
+
+// I2C timeout constant
+#define I2C_MASTER_TIMEOUT_MS       1000
+
+static const char* TAG = "BNO055";
 
 /*----------------------------------------------------------------------------*
 *  The following APIs are used for reading and writing of
@@ -535,6 +546,33 @@ s32 bno055_data_readout_template(void)
  *--------------------------------------------------------------------------*/
 s8 I2C_routine(void)
 {
+    esp_err_t err;
+
+    // Configure I2C master
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = CONFIG_BNO055_I2C_SDA_IO,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_io_num = CONFIG_BNO055_I2C_SCL_IO,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = CONFIG_BNO055_I2C_FREQ_HZ,
+    };
+
+    err = i2c_param_config(CONFIG_BNO055_I2C_PORT_NUM, &conf);
+    if (err != ESP_OK) {
+        ESP_EARLY_LOGE(TAG, "I2C config failed: %s", esp_err_to_name(err));
+        return BNO055_ERROR;
+    }
+
+    err = i2c_driver_install(CONFIG_BNO055_I2C_PORT_NUM, conf.mode, 0, 0, 0);
+    if (err != ESP_OK) {
+        ESP_EARLY_LOGE(TAG, "I2C driver install failed: %s", esp_err_to_name(err));
+        return BNO055_ERROR;
+    }
+
+    ESP_EARLY_LOGI(TAG, "I2C initialized successfully");
+
+    // Set BNO055 function pointers
     bno055.bus_write = BNO055_I2C_bus_write;
     bno055.bus_read = BNO055_I2C_bus_read;
     bno055.delay_msec = BNO055_delay_msek;
@@ -567,34 +605,27 @@ s8 I2C_routine(void)
  */
 s8 BNO055_I2C_bus_write(u8 dev_addr, u8 reg_addr, u8 *reg_data, u8 cnt)
 {
-    s32 BNO055_iERROR = BNO055_INIT_VALUE;
-    u8 array[I2C_BUFFER_LEN];
-    u8 stringpos = BNO055_INIT_VALUE;
+    esp_err_t err;
 
-    array[BNO055_INIT_VALUE] = reg_addr;
-    for (stringpos = BNO055_INIT_VALUE; stringpos < cnt; stringpos++)
-    {
-        array[stringpos + BNO055_I2C_BUS_WRITE_ARRAY_INDEX] = *(reg_data + stringpos);
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg_addr, true);
+
+    if (cnt > 0 && reg_data != NULL) {
+        i2c_master_write(cmd, reg_data, cnt, true);
     }
-}
 
-/*
- * Please take the below APIs as your reference for
- * write the data using I2C communication
- * "BNO055_iERROR = I2C_WRITE_STRING(DEV_ADDR, ARRAY, CNT+1)"
- * add your I2C write APIs here
- * BNO055_iERROR is an return value of I2C read API
- * Please select your valid return value
- * In the driver BNO055_SUCCESS defined as 0
- * and FAILURE defined as -1
- * Note :
- * This is a full duplex operation,
- * The first read data is discarded, for that extra write operation
- * have to be initiated. For that cnt+1 operation done
- * in the I2C write string function
- * For more information please refer data sheet SPI communication:
- */
-return (s8)BNO055_iERROR;
+    i2c_master_stop(cmd);
+    err = i2c_master_cmd_begin(CONFIG_BNO055_I2C_PORT_NUM, cmd, pdMS_TO_TICKS(I2C_MASTER_TIMEOUT_MS));
+    i2c_cmd_link_delete(cmd);
+
+    if (err != ESP_OK) {
+        ESP_EARLY_LOGE(TAG, "I2C write failed: %s", esp_err_to_name(err));
+        return BNO055_ERROR;
+    }
+
+    return BNO055_SUCCESS;
 }
 
 /*  \Brief: The API is used as I2C bus read
@@ -608,28 +639,38 @@ return (s8)BNO055_iERROR;
  */
 s8 BNO055_I2C_bus_read(u8 dev_addr, u8 reg_addr, u8 *reg_data, u8 cnt)
 {
-    s32 BNO055_iERROR = BNO055_INIT_VALUE;
-    u8 array[I2C_BUFFER_LEN] = { BNO055_INIT_VALUE };
-    u8 stringpos = BNO055_INIT_VALUE;
+    esp_err_t err;
 
-    array[BNO055_INIT_VALUE] = reg_addr;
-
-    /* Please take the below API as your reference
-     * for read the data using I2C communication
-     * add your I2C read API here.
-     * "BNO055_iERROR = I2C_WRITE_READ_STRING(DEV_ADDR,
-     * ARRAY, ARRAY, 1, CNT)"
-     * BNO055_iERROR is an return value of SPI write API
-     * Please select your valid return value
-     * In the driver BNO055_SUCCESS defined as 0
-     * and FAILURE defined as -1
-     */
-    for (stringpos = BNO055_INIT_VALUE; stringpos < cnt; stringpos++)
-    {
-        *(reg_data + stringpos) = array[stringpos];
+    if (cnt == 0 || reg_data == NULL) {
+        return BNO055_ERROR;
     }
 
-    return (s8)BNO055_iERROR;
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+
+    // Write register address
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg_addr, true);
+
+    // Read data
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_READ, true);
+
+    if (cnt > 1) {
+        i2c_master_read(cmd, reg_data, cnt - 1, I2C_MASTER_ACK);
+    }
+    i2c_master_read_byte(cmd, reg_data + cnt - 1, I2C_MASTER_NACK);
+
+    i2c_master_stop(cmd);
+    err = i2c_master_cmd_begin(CONFIG_BNO055_I2C_PORT_NUM, cmd, pdMS_TO_TICKS(I2C_MASTER_TIMEOUT_MS));
+    i2c_cmd_link_delete(cmd);
+
+    if (err != ESP_OK) {
+        ESP_EARLY_LOGE(TAG, "I2C read failed: %s", esp_err_to_name(err));
+        return BNO055_ERROR;
+    }
+
+    return BNO055_SUCCESS;
 }
 
 /*  Brief : The delay routine
@@ -637,7 +678,7 @@ s8 BNO055_I2C_bus_read(u8 dev_addr, u8 reg_addr, u8 *reg_data, u8 cnt)
  */
 void BNO055_delay_msek(u32 msek)
 {
-    /*Here you can write your own delay routine*/
+    esp_rom_delay_us(msek * 1000);  // 阻塞延迟，不让出CPU
 }
 
 #endif

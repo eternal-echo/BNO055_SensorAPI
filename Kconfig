@@ -1,0 +1,32 @@
+menu "BNO055 IMU Configuration"
+
+    config BNO055_I2C_SCL_IO
+        int "I2C SCL GPIO Pin"
+        default 23
+        range 0 39
+        help
+            GPIO pin number for I2C SCL (clock) line.
+
+    config BNO055_I2C_SDA_IO
+        int "I2C SDA GPIO Pin"
+        default 18
+        range 0 39
+        help
+            GPIO pin number for I2C SDA (data) line.
+
+    config BNO055_I2C_FREQ_HZ
+        int "I2C Clock Frequency (Hz)"
+        default 400000
+        range 100000 1000000
+        help
+            I2C master clock frequency in Hz.
+            Standard: 100000, Fast: 400000, Fast+: 1000000
+
+    config BNO055_I2C_PORT_NUM
+        int "I2C Port Number"
+        default 0
+        range 0 1
+        help
+            I2C port number (0 or 1).
+
+endmenu
