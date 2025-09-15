@@ -29,33 +29,11 @@ menu "BNO055 IMU Configuration"
         help
             I2C port number (0 or 1).
 
-    config BNO055_ENABLE_IRQ
-        bool "Enable BNO055 Interrupt Support"
-        default n
-        help
-            Enable BNO055 interrupt functionality for motion detection.
-
-    config BNO055_IRQ_GPIO
-        int "BNO055 Interrupt GPIO Pin"
-        depends on BNO055_ENABLE_IRQ
-        default 25
-        range 0 39
-        help
-            GPIO pin number for BNO055 interrupt line (INT pin).
-
-    config BNO055_IRQ_ACTIVE_LOW
-        bool "Interrupt Active Low"
-        depends on BNO055_ENABLE_IRQ
-        default y
-        help
-            Set interrupt polarity. Default is active low.
-
     config BNO055_POLL_INTERVAL_MS
-        int "Polling interval when IRQ disabled (ms)"
-        depends on !BNO055_ENABLE_IRQ
+        int "Polling interval (ms)"
         default 50
         range 10 1000
         help
-            When interrupts are disabled, read one frame periodically with this interval.
+            Read BNO055 data periodically with this interval.
 
 endmenu

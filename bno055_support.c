@@ -63,10 +63,6 @@ static const char* TAG = "BNO055";
 static i2c_master_bus_handle_t s_i2c_bus = NULL;
 static i2c_master_dev_handle_t s_bno_dev = NULL;
 
-#ifdef CONFIG_BNO055_ENABLE_IRQ
-// IRQ related variables
-static volatile bool bno055_irq_triggered = false;
-#endif
 // Unified acquisition task handle
 static TaskHandle_t s_bno_acq_task_handle = NULL;
 
@@ -748,18 +744,6 @@ void BNO055_delay_msek(u32 msek)
     esp_rom_delay_us(msek * 1000);  // 阻塞延迟，不让出CPU
 }
 
-#ifdef CONFIG_BNO055_ENABLE_IRQ
-// ISR handler
-static void IRAM_ATTR bno055_irq_handler(void* arg)
-{
-    bno055_irq_triggered = true;
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    if (s_bno_acq_task_handle) {
-        vTaskNotifyGiveFromISR(s_bno_acq_task_handle, &xHigherPriorityTaskWoken);
-    }
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
-#endif
 
 // Common one-shot sampler
 static inline void bno055_sample_once(void)
@@ -824,21 +808,13 @@ static inline void bno055_sample_once(void)
     bno055_latest_data.data_valid = true;
 }
 
-// Unified acquisition task (IRQ or polling)
+// Unified acquisition task (polling only)
 static void bno055_acq_task(void* pvParameters)
 {
     vTaskDelay(pdMS_TO_TICKS(700));
     while (1) {
-#ifdef CONFIG_BNO055_ENABLE_IRQ
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (bno055_irq_triggered) {
-            bno055_irq_triggered = false;
-            bno055_sample_once();
-        }
-#else
         bno055_sample_once();
         vTaskDelay(pdMS_TO_TICKS(CONFIG_BNO055_POLL_INTERVAL_MS));
-#endif
     }
 }
 
@@ -897,48 +873,9 @@ esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler
 
 /* IRQ deinit removed: merged into bno055_data_acq_stop */
 
-// Start background acquisition depending on config
+// Start background acquisition with polling
 esp_err_t bno055_data_acq_start(void)
 {
-#ifdef CONFIG_BNO055_ENABLE_IRQ
-    // Configure GPIO for IRQ
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << CONFIG_BNO055_IRQ_GPIO),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = CONFIG_BNO055_IRQ_ACTIVE_LOW ? GPIO_INTR_NEGEDGE : GPIO_INTR_POSEDGE
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&io_conf), TAG, "GPIO config failed");
-
-    // Install GPIO ISR
-    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "GPIO ISR install failed");
-        return err;
-    }
-    ESP_RETURN_ON_ERROR(gpio_isr_handler_add(CONFIG_BNO055_IRQ_GPIO, bno055_irq_handler, NULL),
-                        TAG, "GPIO ISR handler add failed");
-
-    // Create acquisition task
-    if (s_bno_acq_task_handle == NULL) {
-        BaseType_t ret = xTaskCreate(bno055_acq_task, "bno055_acq", 3072, NULL,
-                                     configMAX_PRIORITIES - 1, &s_bno_acq_task_handle);
-        if (ret != pdPASS) {
-            return ESP_ERR_NO_MEM;
-        }
-    }
-
-    // Enable BNO055 any motion interrupt (example; can be adjusted)
-    if (bno055_set_intr_mask_accel_any_motion(BNO055_BIT_ENABLE) != BNO055_SUCCESS ||
-        bno055_set_intr_accel_any_motion(BNO055_BIT_ENABLE) != BNO055_SUCCESS) {
-        ESP_LOGW(TAG, "BNO055 motion interrupt config failed");
-        // Not fatal for start
-    }
-
-    ESP_LOGI(TAG, "BNO055 IRQ mode started on GPIO%d", CONFIG_BNO055_IRQ_GPIO);
-    return ESP_OK;
-#else
     if (s_bno_acq_task_handle == NULL) {
         BaseType_t ret = xTaskCreate(bno055_acq_task, "bno055_acq", 3072, NULL,
                                      configMAX_PRIORITIES - 3, &s_bno_acq_task_handle);
@@ -948,21 +885,10 @@ esp_err_t bno055_data_acq_start(void)
         ESP_LOGI(TAG, "BNO055 polling started @ %d ms", CONFIG_BNO055_POLL_INTERVAL_MS);
     }
     return ESP_OK;
-#endif
 }
 
 esp_err_t bno055_data_acq_stop(void)
 {
-#ifdef CONFIG_BNO055_ENABLE_IRQ
-    if (s_bno_acq_task_handle) {
-        vTaskDelete(s_bno_acq_task_handle);
-        s_bno_acq_task_handle = NULL;
-    }
-    gpio_isr_handler_remove(CONFIG_BNO055_IRQ_GPIO);
-    bno055_latest_data.data_valid = false;
-    ESP_LOGI(TAG, "BNO055 IRQ mode stopped");
-    return ESP_OK;
-#else
     if (s_bno_acq_task_handle) {
         vTaskDelete(s_bno_acq_task_handle);
         s_bno_acq_task_handle = NULL;
@@ -970,7 +896,6 @@ esp_err_t bno055_data_acq_stop(void)
     bno055_latest_data.data_valid = false;
     ESP_LOGI(TAG, "BNO055 polling stopped");
     return ESP_OK;
-#endif
 }
 
 #endif
