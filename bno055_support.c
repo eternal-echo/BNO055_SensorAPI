@@ -40,11 +40,12 @@
 *  Includes
 *---------------------------------------------------------------------------*/
 #include "bno055.h"
+#include <string.h>
 #include "esp_log.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_rom_sys.h"
 #include "driver/gpio.h"
 #include "esp_intr_alloc.h"
@@ -55,6 +56,10 @@
 #define I2C_MASTER_TIMEOUT_MS       1000
 
 static const char* TAG = "BNO055";
+
+// New I2C master driver handles
+static i2c_master_bus_handle_t s_i2c_bus = NULL;
+static i2c_master_dev_handle_t s_bno_dev = NULL;
 
 #ifdef CONFIG_BNO055_ENABLE_IRQ
 // IRQ related variables
@@ -588,35 +593,68 @@ s8 I2C_routine(void)
 {
     esp_err_t err;
 
-    // Configure I2C master
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = CONFIG_BNO055_I2C_SDA_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_io_num = CONFIG_BNO055_I2C_SCL_IO,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = CONFIG_BNO055_I2C_FREQ_HZ,
+    // Create I2C master bus (new driver)
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = (i2c_port_num_t)CONFIG_BNO055_I2C_PORT_NUM,
+        .sda_io_num = (gpio_num_t)CONFIG_BNO055_I2C_SDA_IO,
+        .scl_io_num = (gpio_num_t)CONFIG_BNO055_I2C_SCL_IO,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .intr_priority = 0,
+        .trans_queue_depth = 0,
+        .flags = {
+            .enable_internal_pullup = 1,
+            .allow_pd = 0,
+        },
     };
 
-    err = i2c_param_config(CONFIG_BNO055_I2C_PORT_NUM, &conf);
+    if (s_i2c_bus == NULL) {
+        err = i2c_new_master_bus(&bus_cfg, &s_i2c_bus);
+        if (err != ESP_OK) {
+            ESP_EARLY_LOGE(TAG, "I2C bus init failed: %s", esp_err_to_name(err));
+            return BNO055_ERROR;
+        }
+    }
+
+    // Probe and add BNO055 device on the bus
+    uint16_t found_addr = BNO055_I2C_ADDR1;
+    err = i2c_master_probe(s_i2c_bus, found_addr, 100);
+    if (err == ESP_ERR_NOT_FOUND) {
+        // Try secondary address
+        found_addr = BNO055_I2C_ADDR2;
+        err = i2c_master_probe(s_i2c_bus, found_addr, 100);
+    }
     if (err != ESP_OK) {
-        ESP_EARLY_LOGE(TAG, "I2C config failed: %s", esp_err_to_name(err));
+        ESP_EARLY_LOGE(TAG, "BNO055 not found on I2C bus");
         return BNO055_ERROR;
     }
 
-    err = i2c_driver_install(CONFIG_BNO055_I2C_PORT_NUM, conf.mode, 0, 0, 0);
-    if (err != ESP_OK) {
-        ESP_EARLY_LOGE(TAG, "I2C driver install failed: %s", esp_err_to_name(err));
-        return BNO055_ERROR;
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = found_addr,
+        .scl_speed_hz = CONFIG_BNO055_I2C_FREQ_HZ,
+        .scl_wait_us = 0,
+        .flags = {
+            .disable_ack_check = 0,
+        },
+    };
+
+    if (s_bno_dev == NULL) {
+        err = i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &s_bno_dev);
+        if (err != ESP_OK) {
+            ESP_EARLY_LOGE(TAG, "I2C add device failed: %s", esp_err_to_name(err));
+            return BNO055_ERROR;
+        }
     }
 
-    ESP_EARLY_LOGI(TAG, "I2C initialized successfully");
+    ESP_EARLY_LOGI(TAG, "I2C initialized successfully, found BNO055 at 0x%02X, SDA GPIO %d, SCL GPIO %d",
+            found_addr, bus_cfg.sda_io_num, bus_cfg.scl_io_num);
 
     // Set BNO055 function pointers
     bno055.bus_write = BNO055_I2C_bus_write;
     bno055.bus_read = BNO055_I2C_bus_read;
     bno055.delay_msec = BNO055_delay_msek;
-    bno055.dev_addr = BNO055_I2C_ADDR1;
+    bno055.dev_addr = (u8)found_addr;
 
     return BNO055_INIT_VALUE;
 }
@@ -645,21 +683,22 @@ s8 I2C_routine(void)
  */
 s8 BNO055_I2C_bus_write(u8 dev_addr, u8 reg_addr, u8 *reg_data, u8 cnt)
 {
-    esp_err_t err;
-
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg_addr, true);
-
-    if (cnt > 0 && reg_data != NULL) {
-        i2c_master_write(cmd, reg_data, cnt, true);
+    (void)dev_addr; // Address bound to device handle
+    if (s_bno_dev == NULL) {
+        return BNO055_ERROR;
     }
 
-    i2c_master_stop(cmd);
-    err = i2c_master_cmd_begin(CONFIG_BNO055_I2C_PORT_NUM, cmd, pdMS_TO_TICKS(I2C_MASTER_TIMEOUT_MS));
-    i2c_cmd_link_delete(cmd);
+    if (cnt > 255) {
+        return BNO055_ERROR;
+    }
 
+    uint8_t tmp_buf[1 + 255];
+    tmp_buf[0] = reg_addr;
+    if (cnt > 0 && reg_data != NULL) {
+        memcpy(&tmp_buf[1], reg_data, cnt);
+    }
+
+    esp_err_t err = i2c_master_transmit(s_bno_dev, tmp_buf, (size_t)(cnt + 1), I2C_MASTER_TIMEOUT_MS);
     if (err != ESP_OK) {
         ESP_EARLY_LOGE(TAG, "I2C write failed: %s", esp_err_to_name(err));
         return BNO055_ERROR;
@@ -679,32 +718,16 @@ s8 BNO055_I2C_bus_write(u8 dev_addr, u8 reg_addr, u8 *reg_data, u8 cnt)
  */
 s8 BNO055_I2C_bus_read(u8 dev_addr, u8 reg_addr, u8 *reg_data, u8 cnt)
 {
-    esp_err_t err;
-
+    (void)dev_addr; // Address bound to device handle
     if (cnt == 0 || reg_data == NULL) {
         return BNO055_ERROR;
     }
-
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-
-    // Write register address
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg_addr, true);
-
-    // Read data
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_READ, true);
-
-    if (cnt > 1) {
-        i2c_master_read(cmd, reg_data, cnt - 1, I2C_MASTER_ACK);
+    if (s_bno_dev == NULL) {
+        return BNO055_ERROR;
     }
-    i2c_master_read_byte(cmd, reg_data + cnt - 1, I2C_MASTER_NACK);
 
-    i2c_master_stop(cmd);
-    err = i2c_master_cmd_begin(CONFIG_BNO055_I2C_PORT_NUM, cmd, pdMS_TO_TICKS(I2C_MASTER_TIMEOUT_MS));
-    i2c_cmd_link_delete(cmd);
-
+    uint8_t reg = reg_addr;
+    esp_err_t err = i2c_master_transmit_receive(s_bno_dev, &reg, 1, reg_data, cnt, I2C_MASTER_TIMEOUT_MS);
     if (err != ESP_OK) {
         ESP_EARLY_LOGE(TAG, "I2C read failed: %s", esp_err_to_name(err));
         return BNO055_ERROR;
