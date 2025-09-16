@@ -140,6 +140,11 @@ esp_err_t bno055_data_acq_start(void);
  */
 esp_err_t bno055_data_acq_stop(void);
 
+/*  Brief : Complete BNO055 initialization with status validation
+ *  \return : ESP_OK if successful, error code otherwise
+ */
+esp_err_t bno055_init_sensor(void);
+
 #endif
 
 /********************End of I2C APIs declarations***********************/
@@ -932,6 +937,97 @@ esp_err_t bno055_data_acq_stop(void)
     }
     bno055_latest_data.data_valid = false;
     ESP_LOGI(TAG, "BNO055 polling stopped");
+    return ESP_OK;
+}
+
+/*  Brief : Complete BNO055 initialization with status validation
+ *  \return : ESP_OK if successful, error code otherwise
+ */
+esp_err_t bno055_init_sensor(void)
+{
+    ESP_LOGI(TAG, "Initializing BNO055 IMU sensor...");
+
+    // Initialize I2C first
+    s8 result = I2C_routine();
+    if (result != BNO055_INIT_VALUE) {
+        ESP_LOGE(TAG, "I2C initialization failed");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    // Initialize BNO055 sensor
+    result = bno055_init(&bno055);
+    if (result != BNO055_SUCCESS) {
+        ESP_LOGE(TAG, "BNO055 initialization failed: %d", result);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    // Check chip ID to verify communication
+    u8 chip_id = 0;
+    result = bno055_read_chip_id(&chip_id);
+    if (result != BNO055_SUCCESS || chip_id != 0xA0) {
+        ESP_LOGE(TAG, "BNO055 not responding or wrong chip ID: 0x%02X", chip_id);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    // Set power mode to normal
+    result = bno055_set_power_mode(BNO055_POWER_MODE_NORMAL);
+    if (result != BNO055_SUCCESS) {
+        ESP_LOGE(TAG, "Failed to set power mode: %d", result);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    // Set operation mode to NDOF (9-axis fusion with magnetometer)
+    result = bno055_set_operation_mode(BNO055_OPERATION_MODE_NDOF);
+    if (result != BNO055_SUCCESS) {
+        ESP_LOGE(TAG, "Failed to set operation mode: %d", result);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    // Wait for sensor to stabilize
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Check system status and error codes after initialization
+    u8 sys_status = 0;
+    u8 sys_error = 0;
+    
+    if (bno055_get_sys_stat_code(&sys_status) != BNO055_SUCCESS) {
+        ESP_LOGW(TAG, "Failed to read system status during init");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    if (bno055_get_sys_error_code(&sys_error) != BNO055_SUCCESS) {
+        ESP_LOGW(TAG, "Failed to read system error code during init");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    // Validate system status after initialization
+    if (sys_status < 0x05) {
+        ESP_LOGW(TAG, "System not ready after init, status: 0x%02X", sys_status);
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    if (sys_error != 0x00) {
+        ESP_LOGE(TAG, "System error detected during init: 0x%02X", sys_error);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Test single data read to verify functionality
+    ESP_LOGI(TAG, "Testing single BNO055 data read...");
+    struct bno055_euler_double_t direct_euler;
+    if (bno055_convert_double_euler_hpr_deg(&direct_euler) == BNO055_SUCCESS) {
+        ESP_LOGI(TAG, "Direct read OK: Euler H=%.1f R=%.1f P=%.1f", 
+                (float)direct_euler.h, (float)direct_euler.r, (float)direct_euler.p);
+    } else {
+        ESP_LOGW(TAG, "Single direct read failed, but continuing...");
+    }
+
+    ESP_LOGI(TAG, "BNO055 initialized successfully, Chip ID: 0x%02X, Status: 0x%02X", chip_id, sys_status);
+    ESP_LOGI(TAG, "BNO055 I2C: SDA=%d SCL=%d FREQ=%d Hz PORT=%d",
+             (int)CONFIG_BNO055_I2C_SDA_IO, (int)CONFIG_BNO055_I2C_SCL_IO,
+             (int)CONFIG_BNO055_I2C_FREQ_HZ, (int)CONFIG_BNO055_I2C_PORT_NUM);
+    ESP_LOGI(TAG, "BNO055 mode: NDOF (9-axis fusion), Polling interval: %d ms", 
+             (int)CONFIG_BNO055_POLL_INTERVAL_MS);
+
     return ESP_OK;
 }
 
