@@ -760,9 +760,9 @@ static inline void bno055_sample_once(void)
     struct bno055_quaternion_t quat_data;
     struct bno055_gravity_double_t grav_data;
 
-    // Check system status and error codes before sampling
-    u8 sys_status = 0;
-    u8 sys_error = 0;
+    // // Check system status and error codes before sampling
+    // u8 sys_status = 0;
+    // u8 sys_error = 0;
     
     // // Check system status - should be in normal operation mode
     // if (bno055_get_sys_stat_code(&sys_status) != BNO055_SUCCESS) {
