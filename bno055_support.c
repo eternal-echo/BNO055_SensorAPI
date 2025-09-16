@@ -764,40 +764,40 @@ static inline void bno055_sample_once(void)
     u8 sys_status = 0;
     u8 sys_error = 0;
     
-    // Check system status - should be in normal operation mode
-    if (bno055_get_sys_stat_code(&sys_status) != BNO055_SUCCESS) {
-        ESP_LOGW(TAG, "Failed to read system status");
-        bno055_latest_data.data_valid = false;
-        return;
-    }
+    // // Check system status - should be in normal operation mode
+    // if (bno055_get_sys_stat_code(&sys_status) != BNO055_SUCCESS) {
+    //     ESP_LOGW(TAG, "Failed to read system status");
+    //     bno055_latest_data.data_valid = false;
+    //     return;
+    // }
     
-    // Check for system errors
-    if (bno055_get_sys_error_code(&sys_error) != BNO055_SUCCESS) {
-        ESP_LOGW(TAG, "Failed to read system error code");
-        bno055_latest_data.data_valid = false;
-        return;
-    }
+    // // Check for system errors
+    // if (bno055_get_sys_error_code(&sys_error) != BNO055_SUCCESS) {
+    //     ESP_LOGW(TAG, "Failed to read system error code");
+    //     bno055_latest_data.data_valid = false;
+    //     return;
+    // }
     
-    // Validate system status according to BNO055 datasheet:
-    // 0x00 = System idle (not acceptable for sampling)
-    // 0x01 = System error (not acceptable)  
-    // 0x02 = Initializing peripherals
-    // 0x03 = System initialization
-    // 0x04 = Executing self-test
-    // 0x05 = Sensor fusion algorithm running
-    // 0x06 = System running without fusion algorithm
-    if (sys_status < 0x05) {
-        ESP_LOGW(TAG, "System not ready, status: 0x%02X", sys_status);
-        bno055_latest_data.data_valid = false;
-        return;
-    }
+    // // Validate system status according to BNO055 datasheet:
+    // // 0x00 = System idle (not acceptable for sampling)
+    // // 0x01 = System error (not acceptable)  
+    // // 0x02 = Initializing peripherals
+    // // 0x03 = System initialization
+    // // 0x04 = Executing self-test
+    // // 0x05 = Sensor fusion algorithm running
+    // // 0x06 = System running without fusion algorithm
+    // if (sys_status < 0x05) {
+    //     ESP_LOGW(TAG, "System not ready, status: 0x%02X", sys_status);
+    //     bno055_latest_data.data_valid = false;
+    //     return;
+    // }
     
-    // Check for system errors (0x00 = No error)
-    if (sys_error != 0x00) {
-        ESP_LOGW(TAG, "System error detected: 0x%02X", sys_error);
-        bno055_latest_data.data_valid = false;
-        return;
-    }
+    // // Check for system errors (0x00 = No error)
+    // if (sys_error != 0x00) {
+    //     ESP_LOGW(TAG, "System error detected: 0x%02X", sys_error);
+    //     bno055_latest_data.data_valid = false;
+    //     return;
+    // }
 
     bno055_latest_data.timestamp_us = esp_timer_get_time();
 
