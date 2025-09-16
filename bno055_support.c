@@ -595,7 +595,7 @@ s32 bno055_data_readout_template(void)
  *--------------------------------------------------------------------------*/
 s8 I2C_routine(void)
 {
-    esp_err_t err;
+    esp_err_t ret = ESP_OK;
 
     // Create I2C master bus (new driver)
     i2c_master_bus_config_t bus_cfg = {
@@ -613,25 +613,18 @@ s8 I2C_routine(void)
     };
 
     if (s_i2c_bus == NULL) {
-        err = i2c_new_master_bus(&bus_cfg, &s_i2c_bus);
-        if (err != ESP_OK) {
-            ESP_EARLY_LOGE(TAG, "I2C bus init failed: %s", esp_err_to_name(err));
-            return BNO055_ERROR;
-        }
+        ESP_GOTO_ON_ERROR(i2c_new_master_bus(&bus_cfg, &s_i2c_bus), err, TAG, "I2C bus init failed");
     }
 
     // Probe and add BNO055 device on the bus
     uint16_t found_addr = BNO055_I2C_ADDR1;
-    err = i2c_master_probe(s_i2c_bus, found_addr, 100);
-    if (err == ESP_ERR_NOT_FOUND) {
+    ret = i2c_master_probe(s_i2c_bus, found_addr, 100);
+    if (ret == ESP_ERR_NOT_FOUND) {
         // Try secondary address
         found_addr = BNO055_I2C_ADDR2;
-        err = i2c_master_probe(s_i2c_bus, found_addr, 100);
+        ret = i2c_master_probe(s_i2c_bus, found_addr, 100);
     }
-    if (err != ESP_OK) {
-        ESP_EARLY_LOGE(TAG, "BNO055 not found on I2C bus");
-        return BNO055_ERROR;
-    }
+    ESP_GOTO_ON_ERROR(ret, err, TAG, "BNO055 not found on I2C bus");
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -644,11 +637,7 @@ s8 I2C_routine(void)
     };
 
     if (s_bno_dev == NULL) {
-        err = i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &s_bno_dev);
-        if (err != ESP_OK) {
-            ESP_EARLY_LOGE(TAG, "I2C add device failed: %s", esp_err_to_name(err));
-            return BNO055_ERROR;
-        }
+        ESP_GOTO_ON_ERROR(i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &s_bno_dev), err, TAG, "I2C add device failed");
     }
 
     ESP_EARLY_LOGI(TAG, "I2C initialized successfully, found BNO055 at 0x%02X, SDA GPIO %d, SCL GPIO %d",
@@ -661,6 +650,17 @@ s8 I2C_routine(void)
     bno055.dev_addr = (u8)found_addr;
 
     return BNO055_INIT_VALUE;
+
+err:
+    if (s_bno_dev) {
+        i2c_master_bus_rm_device(s_bno_dev);
+        s_bno_dev = NULL;
+    }
+    if (s_i2c_bus) {
+        i2c_del_master_bus(s_i2c_bus);
+        s_i2c_bus = NULL;
+    }
+    return BNO055_ERROR;
 }
 
 /************** I2C buffer length******/
@@ -755,6 +755,45 @@ static inline void bno055_sample_once(void)
     struct bno055_quaternion_t quat_data;
     struct bno055_gravity_double_t grav_data;
 
+    // Check system status and error codes before sampling
+    u8 sys_status = 0;
+    u8 sys_error = 0;
+    
+    // Check system status - should be in normal operation mode
+    if (bno055_get_sys_stat_code(&sys_status) != BNO055_SUCCESS) {
+        ESP_LOGW(TAG, "Failed to read system status");
+        bno055_latest_data.data_valid = false;
+        return;
+    }
+    
+    // Check for system errors
+    if (bno055_get_sys_error_code(&sys_error) != BNO055_SUCCESS) {
+        ESP_LOGW(TAG, "Failed to read system error code");
+        bno055_latest_data.data_valid = false;
+        return;
+    }
+    
+    // Validate system status according to BNO055 datasheet:
+    // 0x00 = System idle (not acceptable for sampling)
+    // 0x01 = System error (not acceptable)  
+    // 0x02 = Initializing peripherals
+    // 0x03 = System initialization
+    // 0x04 = Executing self-test
+    // 0x05 = Sensor fusion algorithm running
+    // 0x06 = System running without fusion algorithm
+    if (sys_status < 0x05) {
+        ESP_LOGW(TAG, "System not ready, status: 0x%02X", sys_status);
+        bno055_latest_data.data_valid = false;
+        return;
+    }
+    
+    // Check for system errors (0x00 = No error)
+    if (sys_error != 0x00) {
+        ESP_LOGW(TAG, "System error detected: 0x%02X", sys_error);
+        bno055_latest_data.data_valid = false;
+        return;
+    }
+
     bno055_latest_data.timestamp_us = esp_timer_get_time();
 
     if (bno055_convert_double_accel_xyz_msq(&accel_data) == BNO055_SUCCESS) {
@@ -762,7 +801,7 @@ static inline void bno055_sample_once(void)
         bno055_latest_data.accel_y = (float)accel_data.y;
         bno055_latest_data.accel_z = (float)accel_data.z;
     }
-    if (bno055_convert_double_gyro_xyz_dps(&gyro_data) == BNO055_SUCCESS) {
+    if (bno055_convert_double_gyro_xyz_rps(&gyro_data) == BNO055_SUCCESS) {
         bno055_latest_data.gyro_x = (float)gyro_data.x;
         bno055_latest_data.gyro_y = (float)gyro_data.y;
         bno055_latest_data.gyro_z = (float)gyro_data.z;
@@ -772,7 +811,7 @@ static inline void bno055_sample_once(void)
         bno055_latest_data.mag_y = (float)mag_data.y;
         bno055_latest_data.mag_z = (float)mag_data.z;
     }
-    if (bno055_convert_double_euler_hpr_deg(&euler_data) == BNO055_SUCCESS) {
+    if (bno055_convert_double_euler_hpr_rad(&euler_data) == BNO055_SUCCESS) {
         bno055_latest_data.euler_h = (float)euler_data.h;
         bno055_latest_data.euler_r = (float)euler_data.r;
         bno055_latest_data.euler_p = (float)euler_data.p;
@@ -819,8 +858,6 @@ static void bno055_acq_task(void* pvParameters)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_BNO055_POLL_INTERVAL_MS));
     }
 }
-
-/* IRQ init/deinit removed: merged into bno055_data_acq_start/stop */
 
 // Get latest sensor data (fast, no I2C access)
 esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler_hpr,
@@ -872,8 +909,6 @@ esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler
     }
     return ESP_OK;
 }
-
-/* IRQ deinit removed: merged into bno055_data_acq_stop */
 
 // Start background acquisition with polling
 esp_err_t bno055_data_acq_start(void)
