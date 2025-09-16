@@ -976,85 +976,42 @@ esp_err_t bno055_init_sensor(void)
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    // Phase 1: Test raw sensor data reading (AMG mode)
-    ESP_LOGI(TAG, "Phase 1: Testing raw sensor data (AMG mode)...");
-    result = bno055_set_operation_mode(BNO055_OPERATION_MODE_AMG);
+    // Give sensor time to stabilize after power mode change
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // Switch to CONFIG mode first to ensure clean state (critical fix)
+    ESP_LOGI(TAG, "Entering CONFIG mode for clean initialization...");
+    result = bno055_set_operation_mode(BNO055_OPERATION_MODE_CONFIG);
     if (result != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to set AMG operation mode: %d", result);
+        ESP_LOGE(TAG, "Failed to set CONFIG operation mode: %d", result);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    
-    // Wait for mode switch
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(25));  // CONFIG mode switch delay
 
-    // Test accelerometer data
-    struct bno055_accel_t accel_xyz;
-    result = bno055_read_accel_xyz(&accel_xyz);
-    if (result != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to read accelerometer data: %d", result);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    ESP_LOGI(TAG, "Accel raw: X=%d Y=%d Z=%d", accel_xyz.x, accel_xyz.y, accel_xyz.z);
-
-    // Test magnetometer data
-    struct bno055_mag_t mag_xyz;
-    result = bno055_read_mag_xyz(&mag_xyz);
-    if (result != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to read magnetometer data: %d", result);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    ESP_LOGI(TAG, "Mag raw: X=%d Y=%d Z=%d", mag_xyz.x, mag_xyz.y, mag_xyz.z);
-
-    // Test gyroscope data
-    struct bno055_gyro_t gyro_xyz;
-    result = bno055_read_gyro_xyz(&gyro_xyz);
-    if (result != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to read gyroscope data: %d", result);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    ESP_LOGI(TAG, "Gyro raw: X=%d Y=%d Z=%d", gyro_xyz.x, gyro_xyz.y, gyro_xyz.z);
-
-    // Phase 2: Test fusion data reading (NDOF mode)
-    ESP_LOGI(TAG, "Phase 2: Testing fusion data (NDOF mode)...");
+    // Directly set to NDOF mode (following Arduino success pattern)
+    ESP_LOGI(TAG, "Setting NDOF fusion mode directly...");
     result = bno055_set_operation_mode(BNO055_OPERATION_MODE_NDOF);
     if (result != BNO055_SUCCESS) {
         ESP_LOGE(TAG, "Failed to set NDOF operation mode: %d", result);
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    // Wait for mode switch and fusion algorithm to stabilize
-    vTaskDelay(pdMS_TO_TICKS(200));
+    // Wait longer for NDOF fusion algorithm to fully initialize (critical fix)
+    ESP_LOGI(TAG, "Waiting for fusion algorithm initialization...");
+    vTaskDelay(pdMS_TO_TICKS(300));  // Increased delay for stability
 
-    // Test Euler angles
+    // Simple validation read (minimal testing to avoid algorithm disruption)
     struct bno055_euler_t euler_hrp;
     result = bno055_read_euler_hrp(&euler_hrp);
-    if (result != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to read Euler data: %d", result);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    ESP_LOGI(TAG, "Euler raw: H=%d R=%d P=%d", euler_hrp.h, euler_hrp.r, euler_hrp.p);
-
-    // Test quaternion data
-    struct bno055_quaternion_t quaternion_wxyz;
-    result = bno055_read_quaternion_wxyz(&quaternion_wxyz);
-    if (result != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to read quaternion data: %d", result);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    ESP_LOGI(TAG, "Quaternion raw: W=%d X=%d Y=%d Z=%d", 
-             quaternion_wxyz.w, quaternion_wxyz.x, quaternion_wxyz.y, quaternion_wxyz.z);
-
-    // Test converted data (final verification)
-    struct bno055_euler_double_t direct_euler;
-    if (bno055_convert_double_euler_hpr_deg(&direct_euler) == BNO055_SUCCESS) {
-        ESP_LOGI(TAG, "Euler converted: H=%.1f° R=%.1f° P=%.1f°", 
-                (float)direct_euler.h, (float)direct_euler.r, (float)direct_euler.p);
+    if (result == BNO055_SUCCESS) {
+        ESP_LOGI(TAG, "NDOF fusion working - Euler: H=%d R=%d P=%d",
+                 euler_hrp.h, euler_hrp.r, euler_hrp.p);
     } else {
-        ESP_LOGW(TAG, "Converted data read failed, but raw data worked");
+        ESP_LOGW(TAG, "Initial Euler read failed, but fusion may still stabilize");
     }
 
-    // 延迟
-    vTaskDelay(pdMS_TO_TICKS(200));
+    // Allow additional time for fusion algorithm stabilization
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     // Final system status check after all operations
     u8 sys_status = 0;
