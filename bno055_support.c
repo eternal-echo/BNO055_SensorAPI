@@ -1053,6 +1053,9 @@ esp_err_t bno055_init_sensor(void)
         ESP_LOGW(TAG, "Converted data read failed, but raw data worked");
     }
 
+    // 延迟
+    vTaskDelay(pdMS_TO_TICKS(200));
+
     // Final system status check after all operations
     u8 sys_status = 0;
     u8 sys_error = 0;
