@@ -1107,7 +1107,7 @@ esp_err_t bno055_init_sensor(void)
     ESP_LOGI(TAG, "BNO055 I2C: SDA=%d SCL=%d FREQ=%d Hz PORT=%d",
              (int)CONFIG_BNO055_I2C_SDA_IO, (int)CONFIG_BNO055_I2C_SCL_IO,
              (int)CONFIG_BNO055_I2C_FREQ_HZ, (int)CONFIG_BNO055_I2C_PORT_NUM);
-    ESP_LOGI(TAG, "BNO055 mode: NDOF (9-axis fusion), Polling interval: %d ms",
+    ESP_LOGI(TAG, "BNO055 Polling interval: %d ms",
              (int)CONFIG_BNO055_POLL_INTERVAL_MS);
 
 #if BNO055_AUTO_CALIBRATION
