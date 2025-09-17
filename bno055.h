@@ -8145,6 +8145,7 @@ typedef struct {
     float euler_h, euler_r, euler_p;    // 欧拉角 degrees
     float quat_w, quat_x, quat_y, quat_z; // 四元数
     float gravity_x, gravity_y, gravity_z; // 重力向量 m/s²
+    float linear_accel_x, linear_accel_y, linear_accel_z; // 线性加速度 m/s²
     // 校准状态
     u8 calib_sys, calib_gyro, calib_accel, calib_mag;
     // 系统状态

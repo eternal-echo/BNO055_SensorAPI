@@ -74,6 +74,7 @@ volatile struct {
     float euler_h, euler_r, euler_p;    // degrees
     float quat_w, quat_x, quat_y, quat_z; // quaternion
     float gravity_x, gravity_y, gravity_z; // m/s²
+    float linear_accel_x, linear_accel_y, linear_accel_z; // m/s²
     uint8_t calib_sys, calib_gyro, calib_accel, calib_mag; // calib status
     uint32_t timestamp_us;
     bool data_valid;
@@ -751,6 +752,7 @@ static inline void bno055_sample_once(void)
     struct bno055_euler_double_t euler_data;
     struct bno055_quaternion_t quat_data;
     struct bno055_gravity_double_t grav_data;
+    struct bno055_linear_accel_double_t linear_accel_data;
 
     // // Check system status and error codes before sampling
     // u8 sys_status = 0;
@@ -798,7 +800,7 @@ static inline void bno055_sample_once(void)
         bno055_latest_data.accel_y = (float)accel_data.y;
         bno055_latest_data.accel_z = (float)accel_data.z;
     }
-    if (bno055_convert_double_gyro_xyz_rps(&gyro_data) == BNO055_SUCCESS) {
+    if (bno055_convert_double_gyro_xyz_dps(&gyro_data) == BNO055_SUCCESS) {
         bno055_latest_data.gyro_x = (float)gyro_data.x;
         bno055_latest_data.gyro_y = (float)gyro_data.y;
         bno055_latest_data.gyro_z = (float)gyro_data.z;
@@ -808,7 +810,7 @@ static inline void bno055_sample_once(void)
         bno055_latest_data.mag_y = (float)mag_data.y;
         bno055_latest_data.mag_z = (float)mag_data.z;
     }
-    if (bno055_convert_double_euler_hpr_rad(&euler_data) == BNO055_SUCCESS) {
+    if (bno055_convert_double_euler_hpr_deg(&euler_data) == BNO055_SUCCESS) {
         bno055_latest_data.euler_h = (float)euler_data.h;
         bno055_latest_data.euler_r = (float)euler_data.r;
         bno055_latest_data.euler_p = (float)euler_data.p;
@@ -823,6 +825,11 @@ static inline void bno055_sample_once(void)
         bno055_latest_data.gravity_x = (float)grav_data.x;
         bno055_latest_data.gravity_y = (float)grav_data.y;
         bno055_latest_data.gravity_z = (float)grav_data.z;
+    }
+    if (bno055_convert_double_linear_accel_xyz_msq(&linear_accel_data) == BNO055_SUCCESS) {
+        bno055_latest_data.linear_accel_x = (float)linear_accel_data.x;
+        bno055_latest_data.linear_accel_y = (float)linear_accel_data.y;
+        bno055_latest_data.linear_accel_z = (float)linear_accel_data.z;
     }
 
     {
@@ -887,6 +894,9 @@ esp_err_t bno055_get_latest_data(imu_data_t *imu_data)
     imu_data->gravity_x = bno055_latest_data.gravity_x;
     imu_data->gravity_y = bno055_latest_data.gravity_y;
     imu_data->gravity_z = bno055_latest_data.gravity_z;
+    imu_data->linear_accel_x = bno055_latest_data.linear_accel_x;
+    imu_data->linear_accel_y = bno055_latest_data.linear_accel_y;
+    imu_data->linear_accel_z = bno055_latest_data.linear_accel_z;
     imu_data->calib_sys = bno055_latest_data.calib_sys;
     imu_data->calib_gyro = bno055_latest_data.calib_gyro;
     imu_data->calib_accel = bno055_latest_data.calib_accel;
@@ -1024,12 +1034,46 @@ esp_err_t bno055_init_sensor(void)
         ESP_LOGW(TAG, "System error detected but continuing: 0x%02X", sys_error);
     }
 
+    // Read and display calibration status after initialization
+    u8 calib_sys = 0, calib_gyro = 0, calib_accel = 0, calib_mag = 0;
+    if (bno055_get_sys_calib_stat(&calib_sys) == BNO055_SUCCESS &&
+        bno055_get_gyro_calib_stat(&calib_gyro) == BNO055_SUCCESS &&
+        bno055_get_accel_calib_stat(&calib_accel) == BNO055_SUCCESS &&
+        bno055_get_mag_calib_stat(&calib_mag) == BNO055_SUCCESS) {
+
+        ESP_LOGI(TAG, "=== BNO055 Calibration Status ===");
+        ESP_LOGI(TAG, "System:        %d/3 %s", calib_sys, (calib_sys >= 2) ? "✓ Good" : "⚠ Need calibration");
+        ESP_LOGI(TAG, "Gyroscope:     %d/3 %s", calib_gyro, (calib_gyro >= 2) ? "✓ Good" : "⚠ Need calibration");
+        ESP_LOGI(TAG, "Accelerometer: %d/3 %s", calib_accel, (calib_accel >= 2) ? "✓ Good" : "⚠ Need calibration");
+        ESP_LOGI(TAG, "Magnetometer:  %d/3 %s", calib_mag, (calib_mag >= 2) ? "✓ Good" : "⚠ Need calibration");
+
+        if (calib_mag < 2) {
+            ESP_LOGW(TAG, "*** MAGNETOMETER NEEDS CALIBRATION ***");
+            ESP_LOGW(TAG, "To calibrate: Hold device and move in FIGURE-8 pattern");
+            ESP_LOGW(TAG, "Rotate around all 3 axes until mag calibration reaches 2+");
+        }
+        if (calib_gyro < 2) {
+            ESP_LOGW(TAG, "*** GYROSCOPE NEEDS CALIBRATION ***");
+            ESP_LOGW(TAG, "To calibrate: Place device on stable surface and keep still");
+        }
+        if (calib_accel < 2) {
+            ESP_LOGW(TAG, "*** ACCELEROMETER NEEDS CALIBRATION ***");
+            ESP_LOGW(TAG, "To calibrate: Place device in 6 different orientations");
+        }
+        if (calib_sys < 2) {
+            ESP_LOGW(TAG, "*** SYSTEM CALIBRATION LOW ***");
+            ESP_LOGW(TAG, "Overall system needs sensor calibration");
+        }
+    } else {
+        ESP_LOGW(TAG, "Failed to read calibration status");
+    }
+
     ESP_LOGI(TAG, "BNO055 initialization completed successfully!");
     ESP_LOGI(TAG, "Final status - Chip ID: 0x%02X, Sys Status: 0x%02X, Mode: NDOF", chip_id, sys_status);
     ESP_LOGI(TAG, "BNO055 I2C: SDA=%d SCL=%d FREQ=%d Hz PORT=%d",
              (int)CONFIG_BNO055_I2C_SDA_IO, (int)CONFIG_BNO055_I2C_SCL_IO,
              (int)CONFIG_BNO055_I2C_FREQ_HZ, (int)CONFIG_BNO055_I2C_PORT_NUM);
-    ESP_LOGI(TAG, "BNO055 mode: NDOF (9-axis fusion), Polling interval: %d ms", 
+    ESP_LOGI(TAG, "BNO055 mode: NDOF (9-axis fusion), Polling interval: %d ms",
              (int)CONFIG_BNO055_POLL_INTERVAL_MS);
 
     return ESP_OK;
