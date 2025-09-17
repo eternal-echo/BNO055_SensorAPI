@@ -988,9 +988,9 @@ esp_err_t bno055_init_sensor(void)
     // // Give sensor time to stabilize after power mode change
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // Directly set to AM mode (following Arduino success pattern)
-    ESP_LOGI(TAG, "Setting AMG mode directly...");
-    result = bno055_set_operation_mode(BNO055_OPERATION_MODE_IMUPLUS);
+    // Enable full sensor fusion (includes magnetometer) like Adafruit example
+    ESP_LOGI(TAG, "Setting operation mode: NDOF (fusion with magnetometer)...");
+    result = bno055_set_operation_mode(BNO055_OPERATION_MODE_NDOF);
     if (result != BNO055_SUCCESS) {
         ESP_LOGE(TAG, "Failed to set NDOF operation mode: %d", result);
         return ESP_ERR_INVALID_RESPONSE;
@@ -998,7 +998,7 @@ esp_err_t bno055_init_sensor(void)
 
     // Wait longer for NDOF fusion algorithm to fully initialize (critical fix)
     ESP_LOGI(TAG, "Waiting for fusion algorithm initialization...");
-    vTaskDelay(pdMS_TO_TICKS(300));  // Increased delay for stability
+    vTaskDelay(pdMS_TO_TICKS(300));  // Allow fusion to stabilize
 
     // 读取并打印当前工作模式
     u8 current_mode = 0;
