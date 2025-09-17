@@ -8135,4 +8135,21 @@ BNO055_RETURN_FUNCTION_TYPE bno055_get_gyro_any_motion_awake_durn(u8 *gyro_awake
  */
 BNO055_RETURN_FUNCTION_TYPE bno055_set_gyro_any_motion_awake_durn(u8 gyro_awake_durn_u8);
 
+// 统一IMU数据结构
+typedef struct {
+    // 传感器原始数据
+    float accel_x, accel_y, accel_z;    // 加速度 m/s²
+    float gyro_x, gyro_y, gyro_z;       // 陀螺仪 deg/s
+    float mag_x, mag_y, mag_z;          // 磁力计 µT
+    // 融合数据
+    float euler_h, euler_r, euler_p;    // 欧拉角 degrees
+    float quat_w, quat_x, quat_y, quat_z; // 四元数
+    float gravity_x, gravity_y, gravity_z; // 重力向量 m/s²
+    // 校准状态
+    u8 calib_sys, calib_gyro, calib_accel, calib_mag;
+    // 系统状态
+    bool connected;
+    u32 timestamp_ms;
+} imu_data_t;
+
 #endif

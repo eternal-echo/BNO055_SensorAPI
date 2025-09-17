@@ -120,14 +120,6 @@ void BNO055_delay_msek(u32 msek);
 
 /*  Note: IRQ init/deinit logic is embedded inside bno055_data_acq_start/stop */
 
-/*  Brief : Get latest sensor data (fast, no I2C)
- *  \param : pointers to data arrays (can be NULL to skip)
- *  \return : ESP_OK if data valid, ESP_ERR_INVALID_STATE if no data
- */
-esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler_hpr,
-                                 float *quat_wxyz, float *mag_xyz, float *grav_xyz,
-                                 uint8_t *calib_sys, uint8_t *calib_gyro, uint8_t *calib_accel, uint8_t *calib_mag,
-                                 uint32_t *timestamp_us);
 
 /*  Brief : Cleanup BNO055 interrupt support (now merged into bno055_data_acq_stop) */
 
@@ -864,54 +856,44 @@ static void bno055_acq_task(void* pvParameters)
     }
 }
 
-// Get latest sensor data (fast, no I2C access)
-esp_err_t bno055_get_latest_data(float *accel_xyz, float *gyro_xyz, float *euler_hpr,
-                                 float *quat_wxyz, float *mag_xyz, float *grav_xyz,
-                                 uint8_t *calib_sys, uint8_t *calib_gyro, uint8_t *calib_accel, uint8_t *calib_mag,
-                                 uint32_t *timestamp_us)
+// 获取最新IMU数据 - ESP-IDF实现
+esp_err_t bno055_get_latest_data(imu_data_t *imu_data)
 {
+    if (!imu_data) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     if (!bno055_latest_data.data_valid) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (accel_xyz) {
-        accel_xyz[0] = bno055_latest_data.accel_x;
-        accel_xyz[1] = bno055_latest_data.accel_y;
-        accel_xyz[2] = bno055_latest_data.accel_z;
-    }
-    if (gyro_xyz) {
-        gyro_xyz[0] = bno055_latest_data.gyro_x;
-        gyro_xyz[1] = bno055_latest_data.gyro_y;
-        gyro_xyz[2] = bno055_latest_data.gyro_z;
-    }
-    if (euler_hpr) {
-        euler_hpr[0] = bno055_latest_data.euler_h;
-        euler_hpr[1] = bno055_latest_data.euler_p;
-        euler_hpr[2] = bno055_latest_data.euler_r;
-    }
-    if (quat_wxyz) {
-        quat_wxyz[0] = bno055_latest_data.quat_w;
-        quat_wxyz[1] = bno055_latest_data.quat_x;
-        quat_wxyz[2] = bno055_latest_data.quat_y;
-        quat_wxyz[3] = bno055_latest_data.quat_z;
-    }
-    if (mag_xyz) {
-        mag_xyz[0] = bno055_latest_data.mag_x;
-        mag_xyz[1] = bno055_latest_data.mag_y;
-        mag_xyz[2] = bno055_latest_data.mag_z;
-    }
-    if (grav_xyz) {
-        grav_xyz[0] = bno055_latest_data.gravity_x;
-        grav_xyz[1] = bno055_latest_data.gravity_y;
-        grav_xyz[2] = bno055_latest_data.gravity_z;
-    }
-    if (calib_sys) *calib_sys = bno055_latest_data.calib_sys;
-    if (calib_gyro) *calib_gyro = bno055_latest_data.calib_gyro;
-    if (calib_accel) *calib_accel = bno055_latest_data.calib_accel;
-    if (calib_mag) *calib_mag = bno055_latest_data.calib_mag;
-    if (timestamp_us) {
-        *timestamp_us = bno055_latest_data.timestamp_us;
-    }
+    // Direct structure copy
+    imu_data->accel_x = bno055_latest_data.accel_x;
+    imu_data->accel_y = bno055_latest_data.accel_y;
+    imu_data->accel_z = bno055_latest_data.accel_z;
+    imu_data->gyro_x = bno055_latest_data.gyro_x;
+    imu_data->gyro_y = bno055_latest_data.gyro_y;
+    imu_data->gyro_z = bno055_latest_data.gyro_z;
+    imu_data->mag_x = bno055_latest_data.mag_x;
+    imu_data->mag_y = bno055_latest_data.mag_y;
+    imu_data->mag_z = bno055_latest_data.mag_z;
+    imu_data->euler_h = bno055_latest_data.euler_h;
+    imu_data->euler_r = bno055_latest_data.euler_r;
+    imu_data->euler_p = bno055_latest_data.euler_p;
+    imu_data->quat_w = bno055_latest_data.quat_w;
+    imu_data->quat_x = bno055_latest_data.quat_x;
+    imu_data->quat_y = bno055_latest_data.quat_y;
+    imu_data->quat_z = bno055_latest_data.quat_z;
+    imu_data->gravity_x = bno055_latest_data.gravity_x;
+    imu_data->gravity_y = bno055_latest_data.gravity_y;
+    imu_data->gravity_z = bno055_latest_data.gravity_z;
+    imu_data->calib_sys = bno055_latest_data.calib_sys;
+    imu_data->calib_gyro = bno055_latest_data.calib_gyro;
+    imu_data->calib_accel = bno055_latest_data.calib_accel;
+    imu_data->calib_mag = bno055_latest_data.calib_mag;
+    imu_data->connected = true;
+    imu_data->timestamp_ms = bno055_latest_data.timestamp_us / 1000;
+
     return ESP_OK;
 }
 
