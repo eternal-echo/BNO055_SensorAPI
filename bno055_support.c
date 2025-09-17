@@ -961,24 +961,24 @@ esp_err_t bno055_init_sensor(void)
         return ESP_ERR_NOT_FOUND;
     }
 
-    // Set power mode to normal
-    result = bno055_set_power_mode(BNO055_POWER_MODE_NORMAL);
-    if (result != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to set power mode: %d", result);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
+    // // Set power mode to normal
+    // result = bno055_set_power_mode(BNO055_POWER_MODE_NORMAL);
+    // if (result != BNO055_SUCCESS) {
+    //     ESP_LOGE(TAG, "Failed to set power mode: %d", result);
+    //     return ESP_ERR_INVALID_RESPONSE;
+    // }
 
-    // Give sensor time to stabilize after power mode change
-    vTaskDelay(pdMS_TO_TICKS(50));
+    // // Give sensor time to stabilize after power mode change
+    // vTaskDelay(pdMS_TO_TICKS(50));
 
-    // Switch to CONFIG mode first to ensure clean state (critical fix)
-    ESP_LOGI(TAG, "Entering CONFIG mode for clean initialization...");
-    result = bno055_set_operation_mode(BNO055_OPERATION_MODE_CONFIG);
-    if (result != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to set CONFIG operation mode: %d", result);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    vTaskDelay(pdMS_TO_TICKS(25));  // CONFIG mode switch delay
+    // // Switch to CONFIG mode first to ensure clean state (critical fix)
+    // ESP_LOGI(TAG, "Entering CONFIG mode for clean initialization...");
+    // result = bno055_set_operation_mode(BNO055_OPERATION_MODE_CONFIG);
+    // if (result != BNO055_SUCCESS) {
+    //     ESP_LOGE(TAG, "Failed to set CONFIG operation mode: %d", result);
+    //     return ESP_ERR_INVALID_RESPONSE;
+    // }
+    // vTaskDelay(pdMS_TO_TICKS(25));  // CONFIG mode switch delay
 
     // Directly set to NDOF mode (following Arduino success pattern)
     ESP_LOGI(TAG, "Setting NDOF fusion mode directly...");
