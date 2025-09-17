@@ -8135,6 +8135,9 @@ BNO055_RETURN_FUNCTION_TYPE bno055_get_gyro_any_motion_awake_durn(u8 *gyro_awake
  */
 BNO055_RETURN_FUNCTION_TYPE bno055_set_gyro_any_motion_awake_durn(u8 gyro_awake_durn_u8);
 
+// BNO055校准相关宏定义
+#define BNO055_AUTO_CALIBRATION             0    // 启用初始化时自动校准
+
 // 统一IMU数据结构
 typedef struct {
     // 传感器原始数据

@@ -961,24 +961,15 @@ esp_err_t bno055_init_sensor(void)
         return ESP_ERR_NOT_FOUND;
     }
 
-    // // Set power mode to normal
-    // result = bno055_set_power_mode(BNO055_POWER_MODE_NORMAL);
-    // if (result != BNO055_SUCCESS) {
-    //     ESP_LOGE(TAG, "Failed to set power mode: %d", result);
-    //     return ESP_ERR_INVALID_RESPONSE;
-    // }
+    // Set power mode to normal
+    result = bno055_set_power_mode(BNO055_POWER_MODE_NORMAL);
+    if (result != BNO055_SUCCESS) {
+        ESP_LOGE(TAG, "Failed to set power mode: %d", result);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
 
     // // Give sensor time to stabilize after power mode change
-    // vTaskDelay(pdMS_TO_TICKS(50));
-
-    // // Switch to CONFIG mode first to ensure clean state (critical fix)
-    // ESP_LOGI(TAG, "Entering CONFIG mode for clean initialization...");
-    // result = bno055_set_operation_mode(BNO055_OPERATION_MODE_CONFIG);
-    // if (result != BNO055_SUCCESS) {
-    //     ESP_LOGE(TAG, "Failed to set CONFIG operation mode: %d", result);
-    //     return ESP_ERR_INVALID_RESPONSE;
-    // }
-    // vTaskDelay(pdMS_TO_TICKS(25));  // CONFIG mode switch delay
+    vTaskDelay(pdMS_TO_TICKS(50));
 
     // Directly set to AM mode (following Arduino success pattern)
     ESP_LOGI(TAG, "Setting AMG mode directly...");
@@ -1076,7 +1067,49 @@ esp_err_t bno055_init_sensor(void)
     ESP_LOGI(TAG, "BNO055 mode: NDOF (9-axis fusion), Polling interval: %d ms",
              (int)CONFIG_BNO055_POLL_INTERVAL_MS);
 
+#if BNO055_AUTO_CALIBRATION
+    // 启动自动校准流程
+    ESP_LOGI(TAG, "Starting auto-calibration process...");
+    ESP_LOGI(TAG, "=== BNO055 Auto-Calibration Instructions ===");
+    ESP_LOGI(TAG, "1. GYROSCOPE: Place device on stable surface, keep still (auto-completes in ~10s)");
+    ESP_LOGI(TAG, "2. ACCELEROMETER: Slowly place device in 6 different orientations");
+    ESP_LOGI(TAG, "3. MAGNETOMETER: Hold device and move in FIGURE-8 pattern, rotate all axes");
+    ESP_LOGI(TAG, "Monitoring calibration status for 60 seconds...");
+
+    // 轮询校准状态60秒
+    uint32_t start_time = esp_timer_get_time() / 1000;
+    uint32_t timeout_ms = 60000; // 60秒超时
+    bool calibration_complete = false;
+
+    while ((esp_timer_get_time() / 1000 - start_time) < timeout_ms && !calibration_complete) {
+        u8 cal_sys = 0, cal_gyro = 0, cal_accel = 0, cal_mag = 0;
+
+        if (bno055_get_sys_calib_stat(&cal_sys) == BNO055_SUCCESS &&
+            bno055_get_gyro_calib_stat(&cal_gyro) == BNO055_SUCCESS &&
+            bno055_get_accel_calib_stat(&cal_accel) == BNO055_SUCCESS &&
+            bno055_get_mag_calib_stat(&cal_mag) == BNO055_SUCCESS) {
+
+            ESP_LOGI(TAG, "Calibration Status: SYS=%d/3 GYR=%d/3 ACC=%d/3 MAG=%d/3",
+                     cal_sys, cal_gyro, cal_accel, cal_mag);
+
+            // 检查是否全部校准完成
+            if (cal_sys >= 3 && cal_gyro >= 3 && cal_accel >= 3 && cal_mag >= 3) {
+                calibration_complete = true;
+                ESP_LOGI(TAG, "*** AUTO-CALIBRATION COMPLETED SUCCESSFULLY! ***");
+                break;
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(2000)); // 每2秒检查一次
+    }
+
+    if (!calibration_complete) {
+        ESP_LOGW(TAG, "Auto-calibration timeout - you can continue manual calibration later");
+    }
+#endif
+
     return ESP_OK;
 }
+
 
 #endif
