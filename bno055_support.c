@@ -946,6 +946,16 @@ esp_err_t bno055_init_sensor(void)
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    // 软件复位 - 清除所有状态，回到默认配置
+    ESP_LOGI(TAG, "Performing software reset...");
+    result = bno055_set_sys_rst(0x01); // 1=复位系统
+    if (result != BNO055_SUCCESS) {
+        ESP_LOGW(TAG, "Software reset command failed: %d", result);
+    } else {
+        ESP_LOGI(TAG, "Software reset command sent, waiting for completion...");
+        vTaskDelay(pdMS_TO_TICKS(650)); // 等待复位完成，通常需要650ms
+    }
+
     // Initialize BNO055 sensor
     result = bno055_init(&bno055);
     if (result != BNO055_SUCCESS) {
@@ -982,6 +992,32 @@ esp_err_t bno055_init_sensor(void)
     // Wait longer for NDOF fusion algorithm to fully initialize (critical fix)
     ESP_LOGI(TAG, "Waiting for fusion algorithm initialization...");
     vTaskDelay(pdMS_TO_TICKS(300));  // Increased delay for stability
+
+    // 读取并打印当前工作模式
+    u8 current_mode = 0;
+    result = bno055_get_operation_mode(&current_mode);
+    if (result == BNO055_SUCCESS) {
+        const char* mode_name;
+        switch (current_mode) {
+            case 0x00: mode_name = "CONFIG"; break;
+            case 0x01: mode_name = "ACCONLY"; break;
+            case 0x02: mode_name = "MAGONLY"; break;
+            case 0x03: mode_name = "GYRONLY"; break;
+            case 0x04: mode_name = "ACCMAG"; break;
+            case 0x05: mode_name = "ACCGYRO"; break;
+            case 0x06: mode_name = "MAGGYRO"; break;
+            case 0x07: mode_name = "AMG"; break;
+            case 0x08: mode_name = "IMUPLUS"; break;
+            case 0x09: mode_name = "COMPASS"; break;
+            case 0x0A: mode_name = "M4G"; break;
+            case 0x0B: mode_name = "NDOF_FMC_OFF"; break;
+            case 0x0C: mode_name = "NDOF"; break;
+            default: mode_name = "UNKNOWN"; break;
+        }
+        ESP_LOGI(TAG, "Current operation mode: 0x%02X (%s)", current_mode, mode_name);
+    } else {
+        ESP_LOGW(TAG, "Failed to read current operation mode: %d", result);
+    }
 
     // Simple validation read (minimal testing to avoid algorithm disruption)
     struct bno055_euler_t euler_hrp;
