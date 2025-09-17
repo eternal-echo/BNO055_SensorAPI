@@ -946,6 +946,14 @@ esp_err_t bno055_init_sensor(void)
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    // 先初始化驱动，建立 p_bno055 指针，再进行复位
+    // 否则直接调用复位 API 会因 p_bno055==NULL 返回 BNO055_E_NULL_PTR
+    result = bno055_init(&bno055);
+    if (result != BNO055_SUCCESS) {
+        ESP_LOGE(TAG, "BNO055 initialization failed: %d", result);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
     // 软件复位 - 清除所有状态，回到默认配置
     ESP_LOGI(TAG, "Performing software reset...");
     result = bno055_set_sys_rst(0x01); // 1=复位系统
@@ -954,13 +962,12 @@ esp_err_t bno055_init_sensor(void)
     } else {
         ESP_LOGI(TAG, "Software reset command sent, waiting for completion...");
         vTaskDelay(pdMS_TO_TICKS(650)); // 等待复位完成，通常需要650ms
-    }
-
-    // Initialize BNO055 sensor
-    result = bno055_init(&bno055);
-    if (result != BNO055_SUCCESS) {
-        ESP_LOGE(TAG, "BNO055 initialization failed: %d", result);
-        return ESP_ERR_INVALID_RESPONSE;
+        // 复位后设备寄存器恢复默认，重新初始化一次以刷新状态
+        result = bno055_init(&bno055);
+        if (result != BNO055_SUCCESS) {
+            ESP_LOGE(TAG, "BNO055 re-initialization failed after reset: %d", result);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
     }
 
     // Check chip ID to verify communication
@@ -1096,7 +1103,7 @@ esp_err_t bno055_init_sensor(void)
     }
 
     ESP_LOGI(TAG, "BNO055 initialization completed successfully!");
-    ESP_LOGI(TAG, "Final status - Chip ID: 0x%02X, Sys Status: 0x%02X, Mode: NDOF", chip_id, sys_status);
+    ESP_LOGI(TAG, "Final status - Chip ID: 0x%02X, Sys Status: 0x%02X", chip_id, sys_status);
     ESP_LOGI(TAG, "BNO055 I2C: SDA=%d SCL=%d FREQ=%d Hz PORT=%d",
              (int)CONFIG_BNO055_I2C_SDA_IO, (int)CONFIG_BNO055_I2C_SCL_IO,
              (int)CONFIG_BNO055_I2C_FREQ_HZ, (int)CONFIG_BNO055_I2C_PORT_NUM);
