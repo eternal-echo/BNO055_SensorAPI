@@ -980,9 +980,9 @@ esp_err_t bno055_init_sensor(void)
     // }
     // vTaskDelay(pdMS_TO_TICKS(25));  // CONFIG mode switch delay
 
-    // Directly set to NDOF mode (following Arduino success pattern)
-    ESP_LOGI(TAG, "Setting NDOF fusion mode directly...");
-    result = bno055_set_operation_mode(BNO055_OPERATION_MODE_NDOF);
+    // Directly set to AM mode (following Arduino success pattern)
+    ESP_LOGI(TAG, "Setting AMG mode directly...");
+    result = bno055_set_operation_mode(BNO055_OPERATION_MODE_IMUPLUS);
     if (result != BNO055_SUCCESS) {
         ESP_LOGE(TAG, "Failed to set NDOF operation mode: %d", result);
         return ESP_ERR_INVALID_RESPONSE;
